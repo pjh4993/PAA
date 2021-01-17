@@ -2,8 +2,9 @@ import logging
 import tempfile
 import os
 import torch
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from tqdm import tqdm
+import pprint
 
 from paa_core.modeling.roi_heads.mask_head.inference import Masker
 from paa_core.structures.bounding_box import BoxList
@@ -59,12 +60,41 @@ def do_coco_evaluation(
             res = evaluate_predictions_on_coco(
                 dataset.coco, coco_results[iou_type], file_path, iou_type
             )
+            calc_iou_err(res, logger, output_folder)
             results.update(res)
     logger.info(results)
     check_expected_results(results, expected_results, expected_results_sigma_tol)
     if output_folder:
         torch.save(results, os.path.join(output_folder, "coco_results.pth"))
     return results, coco_results
+
+def calc_iou_err(coco_eval, logger, output_dir):
+    """
+    calculate iou prediction error in here
+    """
+
+    iou_err_whole = defaultdict(list)
+    iou_err = coco_eval.iou_diff
+    whole_dt_cnt = 0
+    for _, v in iou_err.items():
+        if len(v) == 0:
+            continue
+        target_iou=v[:,1]
+        iou_diff = v[:,0]
+        whole_dt_cnt += len(v)
+        for i in range(len(target_iou)):
+            idx = round(target_iou[i], 1)
+            iou_err_whole[idx].append(iou_diff[i])
+
+    for k, v in iou_err_whole.items():
+        iou_err_whole[k] = [round(sum(v) / len(v), 3) , len(v), round(len(v) / whole_dt_cnt, 3)]
+    
+    err_whole = pprint.pformat(iou_err_whole)
+    with open(os.path.join(output_dir, 'iou_pred_err.txt'), 'w') as f:
+        f.write(err_whole)
+        f.close()
+    logger.warn(err_whole)
+
 
 
 def prepare_for_coco_detection(predictions, dataset):
@@ -82,8 +112,10 @@ def prepare_for_coco_detection(predictions, dataset):
         prediction = prediction.convert("xywh")
 
         boxes = prediction.bbox.tolist()
+
         scores = prediction.get_field("scores").tolist()
         labels = prediction.get_field("labels").tolist()
+        iou_pred = prediction.get_field("iou_pred").tolist()
 
         mapped_labels = [dataset.contiguous_category_id_to_json_id[i] for i in labels]
 
@@ -94,6 +126,7 @@ def prepare_for_coco_detection(predictions, dataset):
                     "category_id": mapped_labels[k],
                     "bbox": box,
                     "score": scores[k],
+                    "iou_pred": iou_pred[k],
                 }
                 for k, box in enumerate(boxes)
             ]
@@ -315,11 +348,14 @@ def evaluate_predictions_on_coco(
 
     coco_dt = coco_gt.loadRes(str(json_result_file)) if coco_results else COCO()
 
+
     # coco_dt = coco_gt.loadRes(coco_results)
     coco_eval = COCOeval(coco_gt, coco_dt, iou_type)
     coco_eval.evaluate()
     coco_eval.accumulate()
     coco_eval.summarize()
+
+
 
     compute_thresholds_for_classes(coco_eval)
 

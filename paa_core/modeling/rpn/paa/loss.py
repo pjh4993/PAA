@@ -5,6 +5,7 @@ from torch import nn
 import os
 from ..utils import concat_box_prediction_layers
 from paa_core.layers import smooth_l1_loss
+from paa_core.structures import BoxList
 from paa_core.layers import SigmoidFocalLoss
 from paa_core.modeling.matcher import Matcher
 from paa_core.structures.boxlist_ops import boxlist_iou
@@ -100,6 +101,7 @@ class PAALossComputation(object):
             anchors_per_im = cat_boxlist(anchors[im_i])
             num_gt = bboxes_per_im.shape[0]
 
+            targets_per_im.bbox = targets_per_im.bbox.to(anchors_per_im.bbox.device)
             match_quality_matrix = boxlist_iou(targets_per_im, anchors_per_im)
             matched_idxs = self.matcher(match_quality_matrix)
             targets_per_im = targets_per_im.copy_with_fields(['labels'])
@@ -359,6 +361,53 @@ class PAALossComputation(object):
         return res
 
 
+
+class PAAIoUCalc(PAALossComputation):
+    def __call__(self, box_cls, box_regression, iou_pred, targets, anchors):
+        # get IoU-based anchor assignment first to compute anchor scores
+
+        N = iou_pred[0].shape[0]
+
+        box_cls_flatten, box_regression_flatten = concat_box_prediction_layers(
+            box_cls, box_regression)
+        anchors_flatten = torch.cat([cat_boxlist(anchors_per_image).bbox
+            for anchors_per_image in anchors], dim=0)
+        boxes = self.box_coder.decode(box_regression_flatten, anchors_flatten).detach()
+        boxes = boxes.reshape(N,-1, 4)
+
+        detections = []
+        st = 0
+        ious = []
+        for i in range(N):
+            cur_targets = targets[i]
+            cur_targets.bbox = cur_targets.bbox.to(boxes.device)
+            cur_boxes = boxes[i]
+            cur_boxes = BoxList(cur_boxes, cur_targets.size, cur_targets.mode)
+            cur_ious = boxlist_iou(cur_boxes, cur_targets).max(dim=1)[0]
+            ious.append(cur_ious)
+
+        st = 0
+        iou_target = []
+        for i in range(len(anchors[0])):
+            cur_level_iou = []
+            length = iou_pred[i].reshape(N, -1).shape[1]
+            for j in range(N):
+                cur_level_iou.append(ious[j][st:st+length].reshape(1,-1))
+            st += length
+            iou_target.append(torch.cat(cur_level_iou, dim=0).reshape(iou_pred[i].shape))
+
+        iou_diff = []
+        for i in range(len(iou_target)):
+            iou_diff.append((iou_target[i] - iou_pred[i]).abs())
+
+        return iou_target
+
+
+
 def make_paa_loss_evaluator(cfg, box_coder):
     loss_evaluator = PAALossComputation(cfg, box_coder)
     return loss_evaluator
+
+def make_paa_iou_calculator(cfg, box_coder):
+    iou_calculator = PAAIoUCalc(cfg, box_coder)
+    return iou_calculator 

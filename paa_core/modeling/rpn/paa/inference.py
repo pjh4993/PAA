@@ -33,7 +33,7 @@ class PAAPostProcessor(torch.nn.Module):
         self.bbox_aug_vote = bbox_aug_vote
         self.score_voting = score_voting
 
-    def forward_for_single_feature_map(self, box_cls, box_regression, iou_pred, anchors):
+    def forward_for_single_feature_map(self, box_cls, box_regression, iou_pred, anchors, targets=None):
         N, _, H, W = box_cls.shape
         A = box_regression.size(1) // 4
         C = box_cls.size(1) // A
@@ -49,15 +49,32 @@ class PAAPostProcessor(torch.nn.Module):
         pre_nms_top_n = candidate_inds.reshape(N, -1).sum(1)
         pre_nms_top_n = pre_nms_top_n.clamp(max=self.pre_nms_top_n)
 
+        if targets is not None:
+            for i, (per_box_regression, per_anchors, target_per_im) in enumerate(zip(box_regression, anchors, targets)):
+                detections = self.box_coder.decode(
+                    per_box_regression.view(-1, 4),
+                    per_anchors.bbox.view(-1, 4)
+                )
+                target_per_im.bbox = target_per_im.bbox.to(detections.device)
+                detections = BoxList(detections, target_per_im.size)
+                if len(target_per_im) != 0:
+                    curr_iou = boxlist_iou(detections,target_per_im).max(dim=1)[0]
+                else:
+                    curr_iou = torch.zeros_like(iou_pred[i], device=iou_pred.device)
+                iou_pred[i] = curr_iou.reshape(iou_pred[i].shape)
+
         # multiply the classification scores with IoU scores
         if iou_pred is not None:
             iou_pred = permute_and_flatten(iou_pred, N, A, 1, H, W)
-            iou_pred = iou_pred.reshape(N, -1).sigmoid()
+            if targets is not None:
+                iou_pred = iou_pred.reshape(N, -1)
+            else:
+                iou_pred = iou_pred.reshape(N, -1).sigmoid()
             box_cls = (box_cls * iou_pred[:, :, None]).sqrt()
 
         results = []
-        for per_box_cls_, per_box_regression, per_pre_nms_top_n, per_candidate_inds, per_anchors \
-                in zip(box_cls, box_regression, pre_nms_top_n, candidate_inds, anchors):
+        for per_box_cls_, per_box_regression, per_iou_pred_, per_pre_nms_top_n, per_candidate_inds, per_anchors \
+                in zip(box_cls, box_regression, iou_pred, pre_nms_top_n, candidate_inds, anchors):
 
             per_box_cls = per_box_cls_[per_candidate_inds]
 
@@ -68,27 +85,32 @@ class PAAPostProcessor(torch.nn.Module):
             per_box_loc = per_candidate_nonzeros[:, 0]
             per_class = per_candidate_nonzeros[:, 1] + 1
 
+            per_iou_pred = per_iou_pred_[per_box_loc]
+
             detections = self.box_coder.decode(
                 per_box_regression[per_box_loc, :].view(-1, 4),
                 per_anchors.bbox[per_box_loc, :].view(-1, 4)
             )
+            assert detections.isfinite().all()
             boxlist = BoxList(detections, per_anchors.size, mode="xyxy")
             boxlist.add_field("labels", per_class)
             boxlist.add_field("scores", per_box_cls)
+            boxlist.add_field("iou_pred",per_iou_pred)
             boxlist = boxlist.clip_to_image(remove_empty=False)
             boxlist = remove_small_boxes(boxlist, self.min_size)
             results.append(boxlist)
 
         return results
 
-    def forward(self, box_cls, box_regression, iou_pred, anchors):
+    def forward(self, box_cls, box_regression, iou_pred, anchors, targets=None):
         sampled_boxes = []
         anchors = list(zip(*anchors))
         if iou_pred is None:
             iou_pred = [None] * len(box_cls)
         for _, (o, b, i, a) in enumerate(zip(box_cls, box_regression, iou_pred, anchors)):
             sampled_boxes.append(
-                self.forward_for_single_feature_map(o, b, i, a)
+                self.forward_for_single_feature_map(o, b, i, a, targets)
+                #self.forward_for_single_feature_map(o, b, i, a)
             )
 
         boxlists = list(zip(*sampled_boxes))
@@ -142,7 +164,7 @@ class PAAPostProcessor(torch.nn.Module):
                         pos_ious = cur_ious[pos_inds]
                         pos_boxes = boxlist_for_class.bbox[pos_inds]
                         pos_scores = scores_j[pos_inds]
-                        pis = (torch.exp(-(1-pos_ious)**2 / sigma) * pos_scores).unsqueeze(1)
+                        pis = (torch.exp(-(1-pos_ious)**2 / sigma) * pos_scores).unsqueeze(1) + 1e-13
                         voted_box = torch.sum(pos_boxes * pis, dim=0) / torch.sum(pis, dim=0)
                         voted_boxes.append(voted_box.unsqueeze(0))
                     if voted_boxes:
@@ -154,6 +176,7 @@ class PAAPostProcessor(torch.nn.Module):
                         boxlist_for_class_nmsed_.add_field(
                             "scores",
                             boxlist_for_class_nmsed.get_field('scores'))
+                        assert boxlist_for_class_nmsed_.bbox.isfinite().all()
                         result.bbox[result_inds] = boxlist_for_class_nmsed_.bbox
             results.append(result)
         return results

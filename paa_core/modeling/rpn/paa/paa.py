@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from .inference import make_paa_postprocessor
-from .loss import make_paa_loss_evaluator
+from .loss import make_paa_loss_evaluator, make_paa_iou_calculator
 
 from paa_core.layers import Scale
 from paa_core.layers import DFConv2d
@@ -120,6 +120,7 @@ class PAAModule(torch.nn.Module):
         self.anchor_generator = make_anchor_generator_paa(cfg)
         self.use_iou_pred = cfg.MODEL.PAA.USE_IOU_PRED
         self.fpn_strides = cfg.MODEL.PAA.ANCHOR_STRIDES
+        self.iou_calculator = make_paa_iou_calculator(cfg, box_coder)
 
     def forward(self, images, features, targets=None):
         preds = self.head(features)
@@ -132,7 +133,7 @@ class PAAModule(torch.nn.Module):
             return self._forward_train(box_cls, box_regression, iou_pred,
                                        targets, anchors, locations)
         else:
-            return self._forward_test(box_cls, box_regression, iou_pred, anchors)
+            return self._forward_test(box_cls, box_regression, iou_pred, anchors, targets)
 
     def _forward_train(self, box_cls, box_regression, iou_pred, targets, anchors, locations):
         losses = self.loss_evaluator(
@@ -147,8 +148,12 @@ class PAAModule(torch.nn.Module):
             losses_dict['loss_iou_pred'] = losses[2]
         return None, losses_dict
 
-    def _forward_test(self, box_cls, box_regression, iou_pred, anchors):
-        boxes = self.box_selector_test(box_cls, box_regression, iou_pred, anchors)
+    def  _forward_test(self, box_cls, box_regression, iou_pred, anchors, targets=None):
+        """
+        if targets is not None:
+            targets = self.iou_calculator(box_cls, box_regression, iou_pred, targets, anchors)
+        """
+        boxes = self.box_selector_test(box_cls, box_regression, iou_pred, anchors, targets)
         return boxes, {}
 
     def compute_locations(self, features):

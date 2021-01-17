@@ -20,6 +20,8 @@ def compute_on_dataset(model, data_loader, device, timer=None):
     model.eval()
     results_dict = {}
     cpu_device = torch.device("cpu")
+    cnt = False
+
     for _, batch in enumerate(tqdm(data_loader)):
         images, targets, image_ids = batch
         with torch.no_grad():
@@ -31,7 +33,7 @@ def compute_on_dataset(model, data_loader, device, timer=None):
                 else:
                     output = im_detect_bbox_aug(model, images, device)
             else:
-                output = model(images.to(device))
+                output = model(images.to(device), targets)
             if timer:
                 torch.cuda.synchronize()
                 timer.toc()
@@ -39,6 +41,10 @@ def compute_on_dataset(model, data_loader, device, timer=None):
         results_dict.update(
             {img_id: result for img_id, result in zip(image_ids, output)}
         )
+        if cnt == False:
+            cnt = True 
+        else:
+            break
     return results_dict
 
 

@@ -141,17 +141,10 @@ def main():
         default=None,
         nargs=argparse.REMAINDER,
     )
-    parser.add_argument(
-        "--num-gpus",
-        default=1,
-        help="path to config file",
-        type=int,
-    )
 
     args = parser.parse_args()
 
-    #num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
-    num_gpus = args.num_gpus
+    num_gpus = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
     args.distributed = num_gpus > 1
 
     if args.distributed:
