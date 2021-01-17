@@ -73,27 +73,54 @@ def calc_iou_err(coco_eval, logger, output_dir):
     calculate iou prediction error in here
     """
 
-    iou_err_whole = defaultdict(list)
-    iou_err = coco_eval.iou_diff
+    iou_err_by_dt = defaultdict(list)
+    iou_err_by_gt = defaultdict(list)
+
     whole_dt_cnt = 0
+    whole_gt_cnt =0
+
+    iou_err = coco_eval.iou_diff
     for _, v in iou_err.items():
+
         if len(v) == 0:
             continue
-        target_iou=v[:,1]
-        iou_diff = v[:,0]
-        whole_dt_cnt += len(v)
-        for i in range(len(target_iou)):
-            idx = round(target_iou[i], 1)
-            iou_err_whole[idx].append(iou_diff[i])
 
-    for k, v in iou_err_whole.items():
-        iou_err_whole[k] = [round(sum(v) / len(v), 3) , len(v), round(len(v) / whole_dt_cnt, 3)]
+        iou_diff_by_dt = v[0]
+        iou_diff_by_gt = v[1]
+
+        if len(iou_diff_by_dt):
+            target_iou=iou_diff_by_dt[:,1]
+            iou_diff = iou_diff_by_dt[:,0]
+            whole_dt_cnt += len(iou_diff_by_dt)
+            for i in range(len(target_iou)):
+                idx = round(target_iou[i], 1)
+                iou_err_by_dt[idx].append(iou_diff[i])
+        
+        if len(iou_diff_by_gt):
+            target_iou=iou_diff_by_gt[:,1]
+            iou_diff = iou_diff_by_gt[:,0]
+            whole_gt_cnt += len(iou_diff_by_gt)
+            for i in range(len(target_iou)):
+                idx = round(target_iou[i], 1)
+                iou_err_by_gt[idx].append(iou_diff[i])
+
+    for k, v in iou_err_by_dt.items():
+        iou_err_by_dt[k] = [round(sum(v) / len(v), 3) , len(v), round(len(v) / whole_dt_cnt, 3)]
+
+    for k, v in iou_err_by_gt.items():
+        iou_err_by_gt[k] = [round(sum(v) / len(v), 3) , len(v), round(len(v) / whole_dt_cnt, 3)]
     
-    err_whole = pprint.pformat(iou_err_whole)
+    err_dt = pprint.pformat(iou_err_by_dt)
+    err_gt = pprint.pformat(iou_err_by_gt)
     with open(os.path.join(output_dir, 'iou_pred_err.txt'), 'w') as f:
-        f.write(err_whole)
+        f.write("iou diff by pred")
+        f.write(err_dt)
+
+        f.write("iou diff by gt")
+        f.write(err_gt)
         f.close()
-    logger.warn(err_whole)
+    logger.warn(err_dt)
+    logger.warn(err_gt)
 
 
 
@@ -393,7 +420,7 @@ def compute_thresholds_for_classes(coco_eval):
 
 class COCOResults(object):
     METRICS = {
-        "bbox": ["AP", "AP50", "AP75", "APs", "APm", "APl"],
+        "bbox": ["AP", "AP50", "AP60", "AP70", "AP80", "AP90", "APs", "APm", "APl"],
         "segm": ["AP", "AP50", "AP75", "APs", "APm", "APl"],
         "box_proposal": [
             "AR@100",
